@@ -204,6 +204,28 @@ With `--journal` set, the gateway appends one JSON line per accepted mutating co
 
 ---
 
+## Client SDKs
+
+Thin, typed wrappers over the gateway API so you can integrate in a few lines:
+
+- **Python** — [`clients/python`](clients/python) (`hme-client`): `requests`-based HTTP client plus optional WebSocket streaming.
+- **TypeScript / browser** — [`clients/typescript`](clients/typescript) (`hme-client`): zero-dependency client on the global `fetch` and `WebSocket`, works in the browser and Node 18+.
+
+```ts
+import { HmeClient, subscribe } from "hme-client";
+const client = new HmeClient("http://127.0.0.1:8080");
+await client.sell(101.0, 10);
+const ack = await client.buy(101.0, 4);
+subscribe("http://127.0.0.1:8080", (e) => e.type === "trade" && console.log(e));
+```
+
+```python
+from hme_client import HmeClient
+client = HmeClient("http://127.0.0.1:8080")
+client.sell(price=101.0, quantity=10)
+ack = client.buy(price=101.0, quantity=4)
+```
+
 ## Console
 
 The bundled web console (`web/`, no build step, no external dependencies) is a single-page operations dashboard served by the gateway:

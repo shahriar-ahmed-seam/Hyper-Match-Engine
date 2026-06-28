@@ -1,0 +1,28 @@
+{
+  "name": "hme-client",
+  "version": "0.1.0",
+  "description": "TypeScript/browser client for the Hyper-Match-Engine gateway HTTP + WebSocket API",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "src", "README.md"],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "tsc"
+  },
+  "keywords": ["hft", "matching-engine", "trading", "order-book", "client", "sdk", "websocket"],
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}

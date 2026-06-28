@@ -19,3 +19,7 @@ err.txt
 # Runtime data (persistence journal)
 /data/
 *.jsonl
+
+# Node / TypeScript SDK
+node_modules/
+clients/typescript/dist/
