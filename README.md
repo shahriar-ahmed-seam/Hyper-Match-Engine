@@ -202,19 +202,17 @@ The sustained-throughput target (≥100k orders/sec on a single core) and OS soc
 
 ---
 
-## Use cases
+## What you can build with it
 
-A matching engine is the core of any venue where orders meet. This project is a clean, self-contained reference implementation of that core plus the surrounding plumbing. It's useful as:
+Every exchange, every dark pool, every crypto venue runs on one thing: a matching engine. It is the part that takes buy and sell orders and pairs them, fairly and in order, millions of times a day. This repo is that engine, built the way the real ones are built, with nothing hidden behind a framework.
 
-- **A learning / reference codebase** for how exchanges, dark pools, and crossing networks actually work: price-time priority, a limit order book backed by pre-allocated pools, a deterministic single-threaded hot path, and a binary protocol between an untrusted edge and the matching core.
-- **A starting point for a real venue** — equities/crypto exchange, internal crossing engine, RFQ/auction system, or a brokerage's smart-order-router test harness. The tiers map directly onto how production trading systems are built: a hardened protocol gateway in a safe language, a lean compute core in a systems language, and a fixed wire format between them.
-- **A backtesting / simulation matcher** — feed historical or synthetic order flow through the engine to study fills, queue position, and microstructure, relying on its determinism for reproducible runs.
-- **An exchange simulator for testing trading software** — point a trading bot or OMS at the gateway's HTTP/WebSocket API and exercise it against realistic order/trade/cancel semantics without touching a live market.
-- **An engineering portfolio piece / interview artifact** demonstrating low-latency design (zero hot-path allocation, lock-free single-threaded matching), cross-language system design, and property-based testing.
+Point a trading bot at it and you have an exchange simulator that behaves like the real thing, without risking a cent on a live market. Feed it a day of order flow and you have a deterministic backtester where every run reproduces exactly. Fork it and you have the skeleton for an internal crossing engine, an RFQ desk, or a small venue of your own. Strip it to the core and you have the clearest working example of price-time priority and a lock-free order book you will find anywhere.
 
-Why these patterns: trading cores are deterministic and allocation-free because predictability and tail latency matter more than raw throughput; they keep untrusted parsing out of the hot path for safety; and they use a compact binary protocol because every microsecond and byte counts. Those same properties make the engine a faithful teaching and prototyping tool even outside finance — any system that needs a deterministic, auditable, high-throughput "match requests to resources in priority order" core (ad auctions, resource schedulers, ticketing) shares the same shape.
+The design is not academic. Real trading cores are single-threaded, allocation-free, and deterministic because in markets, predictable tail latency and perfect replay beat good averages every time. They keep untrusted parsing at the edge so a malformed order can never reach the book. They speak a tight binary protocol because at scale, every byte and every microsecond is money. All three are here, wired together and provable.
 
-It is a reference implementation, not a regulated trading venue: it has no authentication, persistence, market-data fan-out at scale, or clearing/settlement. Those are the layers you would add around this core to take it to production.
+And the pattern travels. Anything that matches incoming demand to limited supply in strict priority, quickly and auditably, is the same machine underneath: ad auctions, job schedulers, ticketing, order routing. Learn it here, apply it anywhere.
+
+This is a reference core, not a regulated venue. Authentication, persistence, market-data fan-out, and clearing are the layers you bolt on to go live. Everything beneath them is already built, tested, and running.
 
 ## License
 
