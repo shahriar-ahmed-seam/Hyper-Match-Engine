@@ -1,5 +1,10 @@
 # Hyper-Match-Engine
 
+[![CI](https://github.com/shahriar-ahmed-seam/Hyper-Match-Engine/actions/workflows/ci.yml/badge.svg)](https://github.com/shahriar-ahmed-seam/Hyper-Match-Engine/actions/workflows/ci.yml)
+&nbsp;![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C)
+&nbsp;![Rust](https://img.shields.io/badge/Rust-stable-DEA584)
+&nbsp;![License: MIT](https://img.shields.io/badge/license-MIT-green)
+
 A low-latency limit-order-matching system built as three cleanly separated tiers: a memory-safe **Rust gateway** that owns the untrusted client boundary, a fixed-layout **binary wire protocol** shared byte-for-byte between languages, and a single-threaded, allocation-free **C++ matching engine** that maintains a price-time-priority limit order book.
 
 The engine is deterministic and does zero dynamic allocation on the hot path. The whole stack runs end-to-end over TCP and ships with a real-time web console for driving and observing it.
@@ -81,6 +86,20 @@ Every message is `[type:u8][fixed-width little-endian fields…]` with a fixed t
 
 ---
 
+## Quick start (one command)
+
+Builds both tiers, starts the engine and the gateway, and opens the console.
+
+```bash
+# Windows (PowerShell)
+powershell -ExecutionPolicy Bypass -File scripts\run.ps1
+
+# Linux / macOS
+./scripts/run.sh
+```
+
+Then open **http://localhost:8080** and submit an order — or hit **Burst** / **Stream** in the load generator to drive real traffic through the engine.
+
 ## Build and run
 
 ### Prerequisites
@@ -137,6 +156,18 @@ curl -s 'localhost:8080/api/book?depth=10'
 Validation maps to HTTP status: `400` for malformed/out-of-range input (naming the offending field), `409` for a duplicate order id, `503` when the engine is unreachable within the response ceiling.
 
 ---
+
+## Console
+
+The bundled web console (`web/`, no build step, no external dependencies) is a single-page operations dashboard served by the gateway:
+
+- **Order book** — live aggregated ladder with proportional depth bars, best bid/ask, spread, and mid.
+- **Trade tape** — streaming prints with uptick/downtick coloring.
+- **Metrics** — throughput, latency p50/p99/max with a live sparkline, and order/trade/cancel counters.
+- **Order entry** — submit buy/sell orders and cancel by id.
+- **Load generator** — fire a burst of *N* real orders or stream them at a chosen rate to drive the engine and watch the book, tape, and throughput move in real time.
+
+It uses the WebSocket feed for live updates and falls back to REST polling if the socket drops.
 
 ## Testing
 
