@@ -1,0 +1,10 @@
+.git
+.github
+.kiro
+.vscode
+target
+cpp/build
+cpp/out
+cpp/Testing
+docs
+*.log

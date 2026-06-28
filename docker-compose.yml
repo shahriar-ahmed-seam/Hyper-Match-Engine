@@ -1,0 +1,28 @@
+# Bring up the full stack:  docker compose up --build
+# Then open http://localhost:8080
+services:
+  engine:
+    build:
+      context: .
+      dockerfile: docker/engine.Dockerfile
+    restart: unless-stopped
+    # Reachable as host "engine" on the compose network; not published to the host.
+    expose:
+      - "9001"
+
+  gateway:
+    build:
+      context: .
+      dockerfile: docker/gateway.Dockerfile
+    depends_on:
+      - engine
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    command:
+      - "--listen"
+      - "0.0.0.0:8080"
+      - "--engine"
+      - "engine:9001"
+      - "--web"
+      - "/app/web"

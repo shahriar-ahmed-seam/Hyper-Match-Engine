@@ -100,6 +100,17 @@ powershell -ExecutionPolicy Bypass -File scripts\run.ps1
 
 Then open **http://localhost:8080** and submit an order — or hit **Burst** / **Stream** in the load generator to drive real traffic through the engine.
 
+### Docker
+
+Bring up the engine and gateway as two containers:
+
+```bash
+docker compose up --build
+# then open http://localhost:8080
+```
+
+The engine runs on the internal compose network; only the gateway's port `8080` is published.
+
 ## Build and run
 
 ### Prerequisites
@@ -190,6 +201,20 @@ Property-based testing is the primary technique for the pure, input-varying comp
 The sustained-throughput target (≥100k orders/sec on a single core) and OS socket timings are validated on representative hardware rather than in CI; the benchmark harness (`cpp/bench`) and its statistics are built and unit-tested here.
 
 ---
+
+## Use cases
+
+A matching engine is the core of any venue where orders meet. This project is a clean, self-contained reference implementation of that core plus the surrounding plumbing. It's useful as:
+
+- **A learning / reference codebase** for how exchanges, dark pools, and crossing networks actually work: price-time priority, a limit order book backed by pre-allocated pools, a deterministic single-threaded hot path, and a binary protocol between an untrusted edge and the matching core.
+- **A starting point for a real venue** — equities/crypto exchange, internal crossing engine, RFQ/auction system, or a brokerage's smart-order-router test harness. The tiers map directly onto how production trading systems are built: a hardened protocol gateway in a safe language, a lean compute core in a systems language, and a fixed wire format between them.
+- **A backtesting / simulation matcher** — feed historical or synthetic order flow through the engine to study fills, queue position, and microstructure, relying on its determinism for reproducible runs.
+- **An exchange simulator for testing trading software** — point a trading bot or OMS at the gateway's HTTP/WebSocket API and exercise it against realistic order/trade/cancel semantics without touching a live market.
+- **An engineering portfolio piece / interview artifact** demonstrating low-latency design (zero hot-path allocation, lock-free single-threaded matching), cross-language system design, and property-based testing.
+
+Why these patterns: trading cores are deterministic and allocation-free because predictability and tail latency matter more than raw throughput; they keep untrusted parsing out of the hot path for safety; and they use a compact binary protocol because every microsecond and byte counts. Those same properties make the engine a faithful teaching and prototyping tool even outside finance — any system that needs a deterministic, auditable, high-throughput "match requests to resources in priority order" core (ad auctions, resource schedulers, ticketing) shares the same shape.
+
+It is a reference implementation, not a regulated trading venue: it has no authentication, persistence, market-data fan-out at scale, or clearing/settlement. Those are the layers you would add around this core to take it to production.
 
 ## License
 
