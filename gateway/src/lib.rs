@@ -165,6 +165,22 @@ impl Gateway {
         self.in_use.contains(&order_id)
     }
 
+    /// Record `order_id` as in use and advance the auto-id allocator past it.
+    ///
+    /// Returns `false` if the identifier was already in use (leaving state
+    /// unchanged). Used to reserve identifiers reconstructed from the
+    /// persistence journal so later auto-assigned ids never collide with them
+    /// and duplicate detection stays correct.
+    pub fn reserve(&mut self, order_id: u64) -> bool {
+        if !self.in_use.insert(order_id) {
+            return false;
+        }
+        if order_id >= self.next_auto_id {
+            self.next_auto_id = order_id.wrapping_add(1);
+        }
+        true
+    }
+
     /// Validate a JSON order body and reserve its identifier.
     ///
     /// On success the returned [`ValidatedOrder`] carries normalized, in-range
@@ -529,6 +545,32 @@ mod tests {
         assert_eq!(err.http_status(), 409);
         // The duplicate must not have changed the live-order set.
         assert_eq!(gw.live_order_count(), 1);
+    }
+
+    // --- Identifier reservation (journal replay) ---------------------------
+
+    #[test]
+    fn reserve_records_id_and_blocks_auto_collision() {
+        let mut gw = Gateway::new();
+        assert!(gw.reserve(5));
+        assert!(gw.is_in_use(5));
+        assert_eq!(gw.live_order_count(), 1);
+
+        // A re-reserve of the same id reports the conflict and changes nothing.
+        assert!(!gw.reserve(5));
+        assert_eq!(gw.live_order_count(), 1);
+
+        // Auto-assignment must skip past the reserved id.
+        let auto = gw
+            .handle_new_order(br#"{"side": "buy", "price": 1.0, "quantity": 1}"#)
+            .expect("valid");
+        assert!(auto.order_id > 5);
+
+        // A later supplied duplicate of the reserved id is still rejected.
+        let err = gw
+            .handle_new_order(br#"{"order_id": 5, "side": "buy", "price": 1.0, "quantity": 1}"#)
+            .expect_err("duplicate");
+        assert_eq!(err, GatewayError::DuplicateOrderId(5));
     }
 
     // --- Malformed / invalid requests --------------------------------------

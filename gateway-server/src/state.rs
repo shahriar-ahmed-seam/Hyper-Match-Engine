@@ -1,7 +1,7 @@
 //! Shared server state and the correlation/dispatch layer that ties HTTP/WS
 //! requests to real engine events.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -12,6 +12,7 @@ use serde_json::json;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::book::{ticks_to_price, OrderBook};
+use crate::journal::{Journal, JournalRecord};
 use crate::stats::Metrics;
 
 /// Maximum trades retained in the in-memory trade tape (newest kept).
@@ -71,10 +72,22 @@ pub struct AppState {
     events: broadcast::Sender<String>,
     connected: AtomicBool,
     book_dirty: AtomicBool,
+    /// True while the gateway is replaying the journal against a freshly
+    /// connected engine; live metrics and journaling are suppressed.
+    restoring: AtomicBool,
+    /// Configured API keys. Empty means authentication is disabled (open mode).
+    api_keys: HashSet<String>,
+    /// Optional persistence journal for accepted mutating commands.
+    pub journal: Option<Journal>,
 }
 
 impl AppState {
-    pub fn new(command_tx: mpsc::Sender<Vec<u8>>, events: broadcast::Sender<String>) -> Self {
+    pub fn new(
+        command_tx: mpsc::Sender<Vec<u8>>,
+        events: broadcast::Sender<String>,
+        api_keys: HashSet<String>,
+        journal: Option<Journal>,
+    ) -> Self {
         AppState {
             gateway: Mutex::new(Gateway::new()),
             book: RwLock::new(OrderBook::default()),
@@ -85,7 +98,40 @@ impl AppState {
             events,
             connected: AtomicBool::new(false),
             book_dirty: AtomicBool::new(false),
+            restoring: AtomicBool::new(false),
+            api_keys,
+            journal,
         }
+    }
+
+    // -- authentication -----------------------------------------------------
+
+    /// Whether a valid API key is required on mutating endpoints.
+    pub fn auth_required(&self) -> bool {
+        !self.api_keys.is_empty()
+    }
+
+    /// Whether `key` matches a configured API key.
+    pub fn is_valid_api_key(&self, key: &str) -> bool {
+        self.api_keys.contains(key)
+    }
+
+    // -- replay gate --------------------------------------------------------
+
+    /// Whether the gateway is currently replaying the journal.
+    pub fn is_restoring(&self) -> bool {
+        self.restoring.load(Ordering::Acquire)
+    }
+
+    /// Enter journal-replay mode: suppress live metrics, journaling, and event
+    /// fan-out while the book is reconstructed.
+    pub fn begin_restore(&self) {
+        self.restoring.store(true, Ordering::Release);
+    }
+
+    /// Leave journal-replay mode.
+    pub fn end_restore(&self) {
+        self.restoring.store(false, Ordering::Release);
     }
 
     // -- connection state ---------------------------------------------------
@@ -214,6 +260,12 @@ impl AppState {
                 self.book.write().unwrap().apply_trade(resting_id, quantity);
                 self.mark_book_dirty();
 
+                // Replayed trades only rebuild the book; they are not recorded
+                // on the live tape, metrics, or event feed.
+                if self.is_restoring() {
+                    return;
+                }
+
                 // Record on the trade tape (newest first).
                 let ts_ms = now_ms();
                 {
@@ -274,16 +326,26 @@ impl AppState {
             self.mark_book_dirty();
         }
 
-        self.metrics.record_accepted();
-        self.broadcast(json!({
-            "type": "accepted",
-            "order_id": order_id,
-            "side": entry.submitted_side,
-            "price": ticks_to_price(entry.submitted_price_ticks),
-            "quantity": entry.submitted_quantity,
-            "filled": filled,
-            "resting": resting,
-        }));
+        if !self.is_restoring() {
+            self.metrics.record_accepted();
+            self.broadcast(json!({
+                "type": "accepted",
+                "order_id": order_id,
+                "side": entry.submitted_side,
+                "price": ticks_to_price(entry.submitted_price_ticks),
+                "quantity": entry.submitted_quantity,
+                "filled": filled,
+                "resting": resting,
+            }));
+            if let Some(journal) = &self.journal {
+                journal.append(&JournalRecord::New {
+                    order_id,
+                    side: entry.submitted_side,
+                    price_ticks: entry.submitted_price_ticks,
+                    quantity: entry.submitted_quantity,
+                });
+            }
+        }
 
         let _ = entry.responder.send(EngineReply {
             terminator,
@@ -297,11 +359,16 @@ impl AppState {
         };
         self.book.write().unwrap().remove(order_id);
         self.mark_book_dirty();
-        self.metrics.record_cancel();
-        self.broadcast(json!({
-            "type": "cancelled",
-            "order_id": order_id,
-        }));
+        if !self.is_restoring() {
+            self.metrics.record_cancel();
+            self.broadcast(json!({
+                "type": "cancelled",
+                "order_id": order_id,
+            }));
+            if let Some(journal) = &self.journal {
+                journal.append(&JournalRecord::Cancel { order_id });
+            }
+        }
         let _ = entry.responder.send(EngineReply {
             terminator,
             fills: entry.fills,
@@ -312,14 +379,16 @@ impl AppState {
         let Some(entry) = self.inflight.lock().unwrap().remove(&order_id) else {
             return;
         };
-        if !entry.is_cancel {
-            self.metrics.record_rejected();
+        if !self.is_restoring() {
+            if !entry.is_cancel {
+                self.metrics.record_rejected();
+            }
+            self.broadcast(json!({
+                "type": "rejected",
+                "order_id": order_id,
+                "reason": reason,
+            }));
         }
-        self.broadcast(json!({
-            "type": "rejected",
-            "order_id": order_id,
-            "reason": reason,
-        }));
         let _ = entry.responder.send(EngineReply {
             terminator,
             fills: entry.fills,

@@ -5,21 +5,24 @@
 mod api;
 mod book;
 mod engine_client;
+mod journal;
 mod state;
 mod stats;
 
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::routing::{get, post};
-use axum::Router;
+use axum::{middleware, Router};
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, mpsc};
 use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
+use crate::journal::Journal;
 use crate::state::{AppState, COMMAND_CHANNEL_CAPACITY, EVENT_CHANNEL_CAPACITY};
 
 /// Resolved runtime configuration.
@@ -27,6 +30,8 @@ struct Config {
     listen: String,
     engine: String,
     web: PathBuf,
+    api_keys: HashSet<String>,
+    journal: Option<PathBuf>,
 }
 
 impl Config {
@@ -35,6 +40,8 @@ impl Config {
         let mut listen = None;
         let mut engine = None;
         let mut web = None;
+        let mut journal = None;
+        let mut api_keys: Vec<String> = Vec::new();
 
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
@@ -42,6 +49,12 @@ impl Config {
                 "--listen" => listen = args.next(),
                 "--engine" => engine = args.next(),
                 "--web" => web = args.next(),
+                "--journal" => journal = args.next(),
+                "--api-key" => {
+                    if let Some(key) = args.next() {
+                        api_keys.push(key);
+                    }
+                }
                 "-h" | "--help" => {
                     print_help();
                     std::process::exit(0);
@@ -61,11 +74,29 @@ impl Config {
         let web = web
             .or_else(|| std::env::var("HME_WEB").ok())
             .unwrap_or_else(|| "./web".to_string());
+        let journal = journal
+            .or_else(|| std::env::var("HME_JOURNAL").ok())
+            .map(PathBuf::from);
+
+        // API keys are the union of repeated `--api-key` flags and the
+        // comma-separated `HME_API_KEYS` env var; empties are discarded.
+        let mut key_set: HashSet<String> =
+            api_keys.into_iter().filter(|k| !k.is_empty()).collect();
+        if let Ok(env_keys) = std::env::var("HME_API_KEYS") {
+            for key in env_keys.split(',') {
+                let key = key.trim();
+                if !key.is_empty() {
+                    key_set.insert(key.to_string());
+                }
+            }
+        }
 
         Config {
             listen,
             engine,
             web: PathBuf::from(web),
+            api_keys: key_set,
+            journal,
         }
     }
 }
@@ -73,11 +104,13 @@ impl Config {
 fn print_help() {
     println!(
         "hme-gateway — Hyper-Match-Engine Gateway server\n\n\
-         USAGE:\n    hme-gateway [--listen ADDR] [--engine ADDR] [--web DIR]\n\n\
+         USAGE:\n    hme-gateway [--listen ADDR] [--engine ADDR] [--web DIR] [--journal PATH] [--api-key KEY]...\n\n\
          OPTIONS:\n    \
          --listen ADDR   HTTP/WS bind address (default 0.0.0.0:8080, env HME_LISTEN)\n    \
          --engine ADDR   Matching engine TCP address (default 127.0.0.1:9001, env HME_ENGINE)\n    \
-         --web DIR       Static web root (default ./web, env HME_WEB)"
+         --web DIR       Static web root (default ./web, env HME_WEB)\n    \
+         --journal PATH  Append-only command journal for replay on restart (env HME_JOURNAL)\n    \
+         --api-key KEY   API key required on mutating endpoints; repeatable (env HME_API_KEYS, comma-separated)"
     );
 }
 
@@ -92,9 +125,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = Config::from_args();
 
+    let journal = match &config.journal {
+        Some(path) => match Journal::open(path) {
+            Ok(journal) => {
+                tracing::info!(path = %path.display(), "command journal enabled");
+                Some(journal)
+            }
+            Err(err) => {
+                eprintln!("failed to open journal {}: {err}", path.display());
+                std::process::exit(1);
+            }
+        },
+        None => None,
+    };
+    let auth_required = !config.api_keys.is_empty();
+
     let (command_tx, command_rx) = mpsc::channel::<Vec<u8>>(COMMAND_CHANNEL_CAPACITY);
     let (events_tx, _events_rx) = broadcast::channel::<String>(EVENT_CHANNEL_CAPACITY);
-    let state = Arc::new(AppState::new(command_tx, events_tx));
+    let state = Arc::new(AppState::new(
+        command_tx,
+        events_tx,
+        config.api_keys,
+        journal,
+    ));
 
     // Persistent engine connection with reconnect.
     tokio::spawn(engine_client::run(
@@ -115,6 +168,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         listen = %listen_addr,
         engine = %config.engine,
         web = %config.web.display(),
+        auth_required,
         "hme-gateway listening"
     );
 
@@ -129,9 +183,17 @@ fn build_router(state: Arc<AppState>, web_dir: &PathBuf) -> Router {
     let index = web_dir.join("index.html");
     let static_files = ServeDir::new(web_dir).fallback(ServeFile::new(index));
 
-    let api = Router::new()
+    // Mutating endpoints sit behind the API-key guard; read endpoints stay open.
+    let mutating = Router::new()
         .route("/api/orders", post(api::post_order))
         .route("/api/cancel/:id", post(api::post_cancel))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            api::require_api_key,
+        ));
+
+    let api = Router::new()
+        .merge(mutating)
         .route("/api/book", get(api::get_book))
         .route("/api/stats", get(api::get_stats))
         .route("/api/trades", get(api::get_trades))

@@ -139,6 +139,14 @@ cargo run --release -p gateway-server -- \
     --listen 127.0.0.1:8080 --engine 127.0.0.1:9001 --web ./web
 ```
 
+Optional flags enable authentication and persistence (both off by default):
+
+```bash
+cargo run --release -p gateway-server -- \
+    --listen 127.0.0.1:8080 --engine 127.0.0.1:9001 --web ./web \
+    --journal ./hme.journal --api-key secret-key
+```
+
 ### 3. Open the console
 
 Visit **http://localhost:8080**. Submit orders, cancel by id, or use the load generator to drive real traffic through the engine and watch the book, trade tape, latency, and throughput update live.
@@ -165,6 +173,34 @@ curl -s 'localhost:8080/api/book?depth=10'
 ```
 
 Validation maps to HTTP status: `400` for malformed/out-of-range input (naming the offending field), `409` for a duplicate order id, `503` when the engine is unreachable within the response ceiling.
+
+---
+
+## Gateway configuration
+
+Every flag has an environment-variable equivalent; flags take precedence.
+
+| Flag | Env | Default | Purpose |
+|------|-----|---------|---------|
+| `--listen ADDR` | `HME_LISTEN` | `0.0.0.0:8080` | HTTP/WebSocket bind address |
+| `--engine ADDR` | `HME_ENGINE` | `127.0.0.1:9001` | Matching engine TCP address |
+| `--web DIR` | `HME_WEB` | `./web` | Static web root |
+| `--journal PATH` | `HME_JOURNAL` | _(disabled)_ | Append-only command journal for replay on restart |
+| `--api-key KEY` | `HME_API_KEYS` | _(disabled)_ | API key required on mutating endpoints |
+
+### Authentication
+
+API-key auth protects the two mutating endpoints — `POST /api/orders` and `POST /api/cancel/{id}` — while the read endpoints (`/api/book`, `/api/stats`, `/api/trades`) and `/ws` stay open so public dashboards keep working. Supply one or more keys with repeated `--api-key` flags or a comma-separated `HME_API_KEYS` list; clients then present a key via `X-API-Key: <key>` or `Authorization: Bearer <key>`. With no keys configured authentication is disabled and the system runs open, so the demo works out of the box. The `/api/stats` response carries an `auth_required` boolean so clients know which mode is active.
+
+```bash
+curl -s localhost:8080/api/orders -H 'content-type: application/json' \
+     -H 'x-api-key: secret-key' \
+     -d '{"side":"sell","price":100.00,"quantity":10}'
+```
+
+### Persistence and replay
+
+With `--journal` set, the gateway appends one JSON line per accepted mutating command — written only after the engine confirms it — to an append-only log. The matching engine is purely in-memory and starts empty on every connect, so on each engine connection (initial start and every reconnect) the gateway replays the journal in order, re-sending the recorded commands with their original order ids before accepting new client traffic. Because the engine is deterministic, replaying the accepted-command history reconstructs the identical order book — so the book survives engine or gateway restarts. Replayed commands are excluded from live latency and throughput metrics and are not re-journaled.
 
 ---
 
@@ -212,7 +248,7 @@ The design is not academic. Real trading cores are single-threaded, allocation-f
 
 And the pattern travels. Anything that matches incoming demand to limited supply in strict priority, quickly and auditably, is the same machine underneath: ad auctions, job schedulers, ticketing, order routing. Learn it here, apply it anywhere.
 
-This is a reference core, not a regulated venue. Authentication, persistence, market-data fan-out, and clearing are the layers you bolt on to go live. Everything beneath them is already built, tested, and running.
+This is a reference core, not a regulated venue. The gateway ships with optional API-key auth and a replay journal; market-data fan-out, clearing, and hardened multi-tenant auth are the layers you bolt on to go live. Everything beneath them is already built, tested, and running.
 
 ## License
 

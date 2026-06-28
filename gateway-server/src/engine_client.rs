@@ -9,16 +9,20 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use codec::MessageType;
+use codec::{layout, BinaryMessage, MessageType, Side};
+use gateway::ValidatedOrder;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 
+use crate::journal::JournalRecord;
 use crate::state::AppState;
 
 const INITIAL_BACKOFF: Duration = Duration::from_millis(100);
 const MAX_BACKOFF: Duration = Duration::from_secs(2);
+/// Per-command ceiling while replaying the journal against a fresh engine.
+const REPLAY_TIMEOUT: Duration = Duration::from_millis(1000);
 
 /// Run the engine connection manager until the command channel is closed.
 pub async fn run(state: Arc<AppState>, engine_addr: String, mut command_rx: mpsc::Receiver<Vec<u8>>) {
@@ -33,11 +37,24 @@ pub async fn run(state: Arc<AppState>, engine_addr: String, mut command_rx: mpsc
                 // A reconnected engine starts from an empty book, so clear any
                 // stale projection before processing fresh events.
                 state.reset_book();
-                state.set_connected(true);
 
                 let (read_half, mut write_half) = stream.into_split();
                 let reader_state = state.clone();
                 let mut reader = tokio::spawn(read_loop(read_half, reader_state));
+
+                // Reconstruct the book by replaying the journal before any new
+                // client traffic is accepted (`connected` stays false until the
+                // replay completes, so mutations are gated to HTTP 503).
+                if !replay_journal(&state, &mut write_half).await {
+                    reader.abort();
+                    state.fail_all_inflight();
+                    tracing::warn!(
+                        engine = %engine_addr,
+                        "engine connection lost during journal replay; reconnecting"
+                    );
+                    continue;
+                }
+                state.set_connected(true);
 
                 // Drive writes from the command channel until the connection
                 // breaks or the reader task ends (signalling a disconnect).
@@ -76,6 +93,106 @@ pub async fn run(state: Arc<AppState>, engine_addr: String, mut command_rx: mpsc
                 sleep(backoff).await;
                 backoff = (backoff * 2).min(MAX_BACKOFF);
             }
+        }
+    }
+}
+
+/// Replay the persistence journal against a freshly connected engine,
+/// re-sending each accepted command (preserving original order ids) and
+/// awaiting its terminator so the book projection is rebuilt deterministically.
+///
+/// Returns `false` if the connection broke mid-replay (the caller reconnects).
+/// With no journal configured or an empty/missing journal this is a no-op that
+/// returns `true`.
+async fn replay_journal<W>(state: &Arc<AppState>, write_half: &mut W) -> bool
+where
+    W: AsyncWriteExt + Unpin,
+{
+    let Some(journal) = state.journal.as_ref() else {
+        return true;
+    };
+    let records = match journal.read_records() {
+        Ok(records) => records,
+        Err(err) => {
+            tracing::error!(error = %err, "failed to read journal; skipping replay");
+            return true;
+        }
+    };
+    if records.is_empty() {
+        return true;
+    }
+
+    tracing::info!(records = records.len(), "replaying journal");
+    state.begin_restore();
+    let mut ok = true;
+    for record in &records {
+        let Some((order_id, frame, receiver)) = prepare_replay(state, record) else {
+            continue;
+        };
+        if write_half.write_all(&frame).await.is_err() {
+            state.drop_inflight(order_id);
+            ok = false;
+            break;
+        }
+        // Await the terminator (resolved by the reader task) so replay stays
+        // ordered; the outcome itself is only used to rebuild the book.
+        let _ = timeout(REPLAY_TIMEOUT, receiver).await;
+    }
+    state.end_restore();
+
+    if ok {
+        tracing::info!(
+            resting_orders = state.book.read().unwrap().resting_count(),
+            "journal replay complete"
+        );
+    }
+    ok
+}
+
+/// Build the wire frame and register the in-flight entry for a single replayed
+/// record, reserving its original id in the gateway. Returns `None` if the
+/// frame cannot be prepared (the record is then skipped).
+fn prepare_replay(
+    state: &Arc<AppState>,
+    record: &JournalRecord,
+) -> Option<(u64, Vec<u8>, tokio::sync::oneshot::Receiver<crate::state::EngineReply>)> {
+    match *record {
+        JournalRecord::New {
+            order_id,
+            side,
+            price_ticks,
+            quantity,
+        } => {
+            let message = {
+                let mut gateway = state.gateway.lock().unwrap();
+                // Reserve the id so future auto-assigned ids never collide and
+                // duplicate detection stays correct.
+                gateway.reserve(order_id);
+                gateway.new_order_message(&ValidatedOrder {
+                    order_id,
+                    side,
+                    price_ticks,
+                    quantity,
+                })
+            };
+            let receiver =
+                state.register_inflight(order_id, side, price_ticks, quantity, false)?;
+            let mut frame = vec![0u8; layout::NEW_ORDER_LEN];
+            if message.encode(&mut frame).is_err() {
+                state.drop_inflight(order_id);
+                return None;
+            }
+            Some((order_id, frame, receiver))
+        }
+        JournalRecord::Cancel { order_id } => {
+            let receiver = state.register_inflight(order_id, Side::Buy, 0, 0, true)?;
+            let message = BinaryMessage::CancelOrder { order_id };
+            let mut frame = vec![0u8; layout::CANCEL_ORDER_LEN];
+            if message.encode(&mut frame).is_err() {
+                state.drop_inflight(order_id);
+                return None;
+            }
+            Some((order_id, frame, receiver))
         }
     }
 }

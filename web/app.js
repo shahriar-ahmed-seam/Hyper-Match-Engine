@@ -193,6 +193,17 @@ function log(kind, tag, msg) {
 $("clearLog").addEventListener("click", () => ($("log").innerHTML = ""));
 
 /* ---------- REST helpers ---------- */
+const API_KEY_LS = "hme.apiKey";
+
+function apiKey() {
+  return ($("apiKey")?.value || "").trim();
+}
+
+function withApiKey(headers) {
+  const key = apiKey();
+  return key ? Object.assign({}, headers, { "X-API-Key": key }) : Object.assign({}, headers);
+}
+
 async function getJSON(path) {
   const r = await fetch(path, { cache: "no-store" });
   if (!r.ok) throw new Error(`${path} → ${r.status}`);
@@ -202,7 +213,7 @@ async function getJSON(path) {
 async function postOrder(body) {
   const r = await fetch("/api/orders", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: withApiKey({ "Content-Type": "application/json" }),
     body: JSON.stringify(body),
   });
   let data = null;
@@ -211,7 +222,10 @@ async function postOrder(body) {
 }
 
 async function postCancel(id) {
-  const r = await fetch(`/api/cancel/${id}`, { method: "POST" });
+  const r = await fetch(`/api/cancel/${id}`, {
+    method: "POST",
+    headers: withApiKey({}),
+  });
   let data = null;
   try { data = await r.json(); } catch { /* non-json */ }
   return { status: r.status, data };
@@ -346,6 +360,10 @@ $("orderForm").addEventListener("submit", async (e) => {
 });
 
 function logOrderResult(status, data) {
+  if (status === 401) {
+    log("error", "HTTP 401", "unauthorized — set your API key");
+    return;
+  }
   if (!data) {
     log("error", `HTTP ${status}`, "no response body");
     return;
@@ -369,7 +387,9 @@ $("cancelBtn").addEventListener("click", async () => {
   log("info", "CANCEL", `#${id}`);
   try {
     const { status, data } = await postCancel(id);
-    if (data && data.status === "cancelled") {
+    if (status === 401) {
+      log("error", "HTTP 401", "unauthorized — set your API key");
+    } else if (data && data.status === "cancelled") {
       log("cancelled", `HTTP ${status}`, `cancelled #${data.order_id} · ${data.latency_us}µs`);
     } else if (data && data.status === "rejected") {
       log("rejected", `HTTP ${status}`, `${data.reason} #${data.order_id ?? id}`);
@@ -482,6 +502,13 @@ window.addEventListener("beforeunload", () => { stopStream(); stopPolling(); });
 window.addEventListener("resize", drawSpark);
 
 /* ---------- boot ---------- */
+const apiKeyInput = $("apiKey");
+if (apiKeyInput) {
+  apiKeyInput.value = localStorage.getItem(API_KEY_LS) || "";
+  apiKeyInput.addEventListener("input", () =>
+    localStorage.setItem(API_KEY_LS, apiKeyInput.value.trim())
+  );
+}
 setSide("buy");
 startPolling();   // immediate data; WS will take over and pause polling when it connects
 connectWs();

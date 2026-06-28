@@ -5,8 +5,9 @@ use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::extract::{Path, Query, Request, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use codec::{layout, AckKind, BinaryMessage, RejectReason, Side};
@@ -30,6 +31,57 @@ const STATS_PUSH_INTERVAL: Duration = Duration::from_millis(500);
 const DEFAULT_DEPTH: usize = 15;
 /// Default trade-tape page size.
 const DEFAULT_TRADE_LIMIT: usize = 50;
+
+// ---------------------------------------------------------------------------
+// API-key authentication (mutating endpoints only)
+// ---------------------------------------------------------------------------
+
+/// Middleware guarding the mutating endpoints (`POST /api/orders`,
+/// `POST /api/cancel/{id}`). When no API keys are configured authentication is
+/// disabled and every request passes; otherwise a valid key is required via
+/// `X-API-Key` or `Authorization: Bearer <key>`. Read endpoints and `/ws` are
+/// never guarded, so public dashboards keep working.
+pub async fn require_api_key(
+    State(state): State<Arc<AppState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if !state.auth_required() {
+        return next.run(request).await;
+    }
+    match extract_api_key(request.headers()) {
+        Some(key) if state.is_valid_api_key(key) => next.run(request).await,
+        _ => unauthorized(),
+    }
+}
+
+/// Extract a presented API key from `X-API-Key` or an `Authorization: Bearer`
+/// header.
+fn extract_api_key(headers: &HeaderMap) -> Option<&str> {
+    if let Some(value) = headers.get("x-api-key").and_then(|v| v.to_str().ok()) {
+        let value = value.trim();
+        if !value.is_empty() {
+            return Some(value);
+        }
+    }
+    if let Some(value) = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+    {
+        if let Some(token) = value.strip_prefix("Bearer ") {
+            let token = token.trim();
+            if !token.is_empty() {
+                return Some(token);
+            }
+        }
+    }
+    None
+}
+
+fn unauthorized() -> Response {
+    let body = json!({ "status": "error", "reason": "unauthorized" });
+    (StatusCode::UNAUTHORIZED, Json(body)).into_response()
+}
 
 // ---------------------------------------------------------------------------
 // POST /api/orders
@@ -264,6 +316,7 @@ pub fn stats_value(state: &AppState) -> Value {
     let resting_orders = state.book.read().unwrap().resting_count();
     json!({
         "engine_connected": state.is_connected(),
+        "auth_required": state.auth_required(),
         "orders_submitted": metrics.orders_submitted,
         "orders_accepted": metrics.orders_accepted,
         "orders_rejected": metrics.orders_rejected,
