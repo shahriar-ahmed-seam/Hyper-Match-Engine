@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hyper-Match-Engine · Ops Console</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">◧</span>
+      <div class="brand-text">
+        <h1>Hyper-Match-Engine</h1>
+        <span class="brand-sub">Real-Time Operations Console</span>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <div class="seq">
+        <span class="seq-label">BOOK SEQ</span>
+        <span class="seq-value" id="seq">—</span>
+      </div>
+      <div class="conn" id="conn">
+        <span class="conn-dot" id="connDot"></span>
+        <span class="conn-text" id="connText">connecting…</span>
+      </div>
+      <div class="link-state" id="linkState" title="Live feed transport">poll</div>
+    </div>
+  </header>
+
+  <!-- Metrics strip -->
+  <section class="metrics" id="metrics">
+    <div class="metric metric-wide">
+      <div class="metric-head">
+        <span class="metric-label">Throughput</span>
+        <span class="metric-unit">ops/s</span>
+      </div>
+      <div class="metric-value" id="mThroughput">0</div>
+      <canvas id="spark" class="spark" width="320" height="44"></canvas>
+      <div class="spark-cap">latency p50 (µs) · live</div>
+    </div>
+
+    <div class="metric">
+      <div class="metric-head"><span class="metric-label">Latency p50</span><span class="metric-unit">µs</span></div>
+      <div class="metric-value" id="mP50">0</div>
+    </div>
+    <div class="metric">
+      <div class="metric-head"><span class="metric-label">Latency p99</span><span class="metric-unit">µs</span></div>
+      <div class="metric-value" id="mP99">0</div>
+    </div>
+    <div class="metric">
+      <div class="metric-head"><span class="metric-label">Latency max</span><span class="metric-unit">µs</span></div>
+      <div class="metric-value" id="mMax">0</div>
+    </div>
+
+    <div class="metric">
+      <div class="metric-head"><span class="metric-label">Submitted</span></div>
+      <div class="metric-value" id="mSubmitted">0</div>
+    </div>
+    <div class="metric">
+      <div class="metric-head"><span class="metric-label">Accepted</span></div>
+      <div class="metric-value pos" id="mAccepted">0</div>
+    </div>
+    <div class="metric">
+      <div class="metric-head"><span class="metric-label">Rejected</span></div>
+      <div class="metric-value neg" id="mRejected">0</div>
+    </div>
+    <div class="metric">
+      <div class="metric-head"><span class="metric-label">Cancels</span></div>
+      <div class="metric-value" id="mCancels">0</div>
+    </div>
+    <div class="metric">
+      <div class="metric-head"><span class="metric-label">Trades</span></div>
+      <div class="metric-value" id="mTrades">0</div>
+    </div>
+    <div class="metric">
+      <div class="metric-head"><span class="metric-label">Resting</span></div>
+      <div class="metric-value" id="mResting">0</div>
+    </div>
+  </section>
+
+  <main class="layout">
+    <!-- Order book -->
+    <section class="panel book-panel">
+      <div class="panel-head">
+        <h2>Order Book</h2>
+        <div class="quote" id="quote">
+          <span class="quote-cell"><em>BID</em><b id="bestBid" class="pos">—</b></span>
+          <span class="quote-cell"><em>SPREAD</em><b id="spread">—</b></span>
+          <span class="quote-cell"><em>MID</em><b id="mid">—</b></span>
+          <span class="quote-cell"><em>ASK</em><b id="bestAsk" class="neg">—</b></span>
+        </div>
+      </div>
+      <div class="ladder-head">
+        <span>Price</span><span>Qty</span><span>Orders</span><span class="depth-col">Depth</span>
+      </div>
+      <div class="ladder" id="asks"></div>
+      <div class="ladder-mid" id="ladderMid">—</div>
+      <div class="ladder" id="bids"></div>
+    </section>
+
+    <!-- Trade tape -->
+    <section class="panel tape-panel">
+      <div class="panel-head"><h2>Trade Tape</h2><span class="muted" id="tapeCount"></span></div>
+      <div class="tape-head"><span>Time</span><span>Price</span><span>Qty</span><span>Seq</span></div>
+      <div class="tape" id="tape"></div>
+    </section>
+
+    <!-- Right column: order entry, load generator, log -->
+    <section class="panel control-panel">
+      <div class="panel-head"><h2>Order Entry</h2></div>
+      <form id="orderForm" class="order-form" autocomplete="off">
+        <div class="side-toggle" role="group" aria-label="Side">
+          <button type="button" class="side-btn active buy" data-side="buy" id="sideBuy">Buy</button>
+          <button type="button" class="side-btn sell" data-side="sell" id="sideSell">Sell</button>
+        </div>
+        <div class="field">
+          <label for="price">Price</label>
+          <input id="price" type="number" step="0.01" min="0.01" value="100.00" />
+        </div>
+        <div class="field">
+          <label for="quantity">Quantity</label>
+          <input id="quantity" type="number" step="1" min="1" value="10" />
+        </div>
+        <div class="field">
+          <label for="orderId">Order ID <span class="muted">(optional)</span></label>
+          <input id="orderId" type="number" placeholder="auto" />
+        </div>
+        <button type="submit" class="submit-btn" id="submitBtn">Submit Buy</button>
+      </form>
+
+      <div class="cancel-row">
+        <input id="cancelId" type="number" placeholder="order id" />
+        <button type="button" class="ghost-btn" id="cancelBtn">Cancel by ID</button>
+      </div>
+
+      <div class="panel-head sub-head"><h2>Load Generator</h2><span class="muted">real orders</span></div>
+      <div class="loadgen">
+        <div class="burst-row">
+          <input id="burstCount" type="number" min="1" max="5000" value="50" />
+          <button type="button" class="accent-btn" id="burstBtn">Burst</button>
+        </div>
+        <div class="stream-row">
+          <div class="rate-wrap">
+            <label for="rate">Rate <span id="rateVal">25</span> ord/s</label>
+            <input id="rate" type="range" min="1" max="200" value="25" />
+          </div>
+          <button type="button" class="accent-btn" id="streamBtn">Start Stream</button>
+        </div>
+        <div class="loadgen-stat" id="loadStat">idle</div>
+      </div>
+
+      <div class="panel-head sub-head"><h2>Event Log</h2><button type="button" class="ghost-btn tiny" id="clearLog">clear</button></div>
+      <div class="log" id="log"></div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

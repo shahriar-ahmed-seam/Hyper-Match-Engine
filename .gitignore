@@ -1,0 +1,17 @@
+# Rust
+/target
+**/*.rs.bk
+
+# C++ build
+/cpp/build/
+/cpp/out/
+/cpp/Testing/
+
+# Spec / scratch
+/.kiro/
+*.log
+out.txt
+err.txt
+
+# Editor
+/.vscode/
