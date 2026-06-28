@@ -428,12 +428,12 @@ fn parse_price(field: Option<&serde_json::Value>) -> Result<u64, GatewayError> {
         .filter(|p| value.is_number() && p.is_finite())
         .ok_or_else(|| GatewayError::InvalidField("price".to_string()))?;
 
-    if price < MIN_PRICE || price > MAX_PRICE {
+    if !(MIN_PRICE..=MAX_PRICE).contains(&price) {
         return Err(GatewayError::InvalidField("price".to_string()));
     }
 
     let ticks = (price * 100.0).round() as u64;
-    if ticks < limits::MIN_PRICE_TICKS || ticks > limits::MAX_PRICE_TICKS {
+    if !(limits::MIN_PRICE_TICKS..=limits::MAX_PRICE_TICKS).contains(&ticks) {
         return Err(GatewayError::InvalidField("price".to_string()));
     }
     Ok(ticks)
@@ -455,9 +455,9 @@ fn parse_quantity(field: Option<&serde_json::Value>) -> Result<u32, GatewayError
         .as_u64()
         .ok_or_else(|| GatewayError::InvalidField("quantity".to_string()))?;
 
-    if quantity < limits::MIN_GATEWAY_QUANTITY as u64
-        || quantity > limits::MAX_GATEWAY_QUANTITY as u64
-    {
+    let min = limits::MIN_GATEWAY_QUANTITY as u64;
+    let max = limits::MAX_GATEWAY_QUANTITY as u64;
+    if !(min..=max).contains(&quantity) {
         return Err(GatewayError::InvalidField("quantity".to_string()));
     }
     Ok(quantity as u32)
