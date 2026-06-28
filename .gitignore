@@ -23,3 +23,7 @@ err.txt
 # Node / TypeScript SDK
 node_modules/
 clients/typescript/dist/
+
+# Python
+__pycache__/
+*.pyc
